@@ -1,3 +1,4 @@
+# 第二阶段：利用连续片段的 CNN 分数训练两个 LSTM 分支。
 import numpy as np
 import torch.nn as nn
 import torch
@@ -14,6 +15,7 @@ model_dir='Models/'
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 #%% network definition
+# 各分支接收 5 维类别分数，两个 10 维隐藏状态拼接后预测中心片段。
 class Net_LSTM(nn.Module):
     def __init__(self):
         super(Net_LSTM, self).__init__()
@@ -39,14 +41,18 @@ def making_batch(F_in,L_in,n_batch,prob):
     
     
     temp=np.arange(N_around+1,F_in.shape[0]-N_around-1)
+    # 随机抽取窗口中心，并使用中心片段的真实阶段作为标签。
     selected=np.random.choice(temp, size=n_batch, p=prob)
     for i in selected:
         label.append(L_in[i])
+        # 输入过去四段和当前段，按时间正序排列。
         data_1.append(F_in[i-N_around:i+1,:])
+        # 输入当前段和未来四段。代码保持正序，与论文图中的反向读取不同。
         data_2.append(F_in[i:i+N_around+1,:])
          
     return data_1,data_2,label
 
+# 统计真实类别与预测类别的交叉计数。
 def cm__(target,lebels,n=5):
     cm=np.zeros([n,n])
     for i in range(n):
@@ -56,6 +62,7 @@ def cm__(target,lebels,n=5):
 
 
 #%% initial
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -95,6 +102,7 @@ net=net.to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(net.parameters(), lr=0.01/minibach_size)
 
+# 生成上下文批次，转换为时间步优先格式，计算损失并更新 LSTM。
 for i in range(n_iter):
     data_1,data_2,label=making_batch(F_in=OUT,L_in=train_labels,n_batch=minibach_size,prob=prob)
 
@@ -122,6 +130,7 @@ for i in range(n_iter):
         optimizer.param_groups[0]['lr']=.9*optimizer.param_groups[0]['lr']
         print(optimizer.param_groups[0]['lr'])
         
+    # 保存 LSTM 权重和训练状态。
     if i % saving_iter == (saving_iter-1):
         torch.save({
                     'model_state_dict': net.state_dict(),

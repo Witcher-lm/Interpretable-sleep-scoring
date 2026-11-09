@@ -1,3 +1,4 @@
+# 第一阶段：训练可学习 Gabor 层和 CNN，按当前 30 秒 EEG/EOG 输出五类分数。
 import os
 import numpy as np
 import torch.nn as nn
@@ -16,6 +17,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(device)
 
 #%% define wave layer
+# 通过参数生成短时振荡模板，再沿时间轴做一维互相关。
 class Wave(nn.Module):
     def __init__(self,n_filt,n_time,n_in=1,strid=1):
         super(Wave, self).__init__()
@@ -36,6 +38,7 @@ class Wave(nn.Module):
         w=self.w.expand(self.n_filt,self.n_time)*3
         s=self.s.expand(self.n_filt,self.n_time)*5
         time=self.time.expand_as(s)
+        # 高斯包络限制振荡的持续范围，余弦部分决定振荡频率和相位。
         filt=torch.exp(-3.1314*torch.abs(s)*((time-u)**2))*torch.cos(2*3.1415*w*10*time+fi)
         self.filt=filt.to(device)
         filt=torch.unsqueeze(filt,1) 
@@ -47,6 +50,7 @@ class Wave(nn.Module):
 
 
 #%% network definition
+# 单片段模型：分开提取 EEG/EOG 响应，融合并输出 5 类 logits。
 class Net(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net, self).__init__()
@@ -73,6 +77,7 @@ class Net(nn.Module):
         self.dr2=nn.Dropout(p=0.5)
 
     def forward(self, x1,x2):
+        # 此处调用 PyTorch 的向量归一化，与论文的 Z-score 定义不同。
         x1=F.normalize(x1)
         x2=F.normalize(x2)
 
@@ -81,9 +86,11 @@ class Net(nn.Module):
         x1=torch.cat((x1,x2),1)
         x1=torch.transpose(x1, 1, 2) 
         
+        # 在每个时间点用相同的线性变换混合 40 路 Gabor 响应，输出 256 路。
         x1=self.mixing(x1)
         x1=torch.transpose(x1, 2, 1) 
 
+        # 五个卷积块逐步组合并压缩时间特征，每块由卷积、ReLU、池化和批标准化组成。
         x1 = self.pool(F.relu(self.conv1(x1)))
         x1 = self.conv1_bn(x1)
         x1 = self.pool(F.relu(self.conv2(x1)))
@@ -95,6 +102,7 @@ class Net(nn.Module):
         x1 = self.pool(F.relu(self.conv5(x1)))
         x1 = self.conv5_bn(x1)
    
+        # 展开通道和时间维度，经 Dropout 和全连接层得到类别分数。
         x = x1.view(-1, self.num_flat_features(x1))
         x=self.dr2(x)
         x = F.relu(self.fc1(x))
@@ -151,6 +159,7 @@ def file_index(n_test=15,n_val=3):
     return train_files,train_labels,val_files,val_labels,test_subjects
 
 
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -193,6 +202,7 @@ def files_for_test(test_subjects):
 # train_files,train_labels,val_files,val_labels,test_subjects=file_index()
 # torch.save({'train_files':train_files,'train_labels':train_labels,'val_files':val_files,'val_labels':val_labels,'test_subjects':test_subjects},'Names_labels.data')
 
+# 读取现成划分；上方被注释的代码用于生成划分。文件级随机划分不等于受试者级划分。
 temp=torch.load('Names_labels.data')
 train_files=temp['train_files']
 train_labels=temp['train_labels']
@@ -222,6 +232,7 @@ net=net.to(device)
 criterion = nn.CrossEntropyLoss()
 
 
+# 给 Gabor 参数单独设置较高学习率。训练版多出相位 fi，必须与后续加载权重的模型定义对齐。
 my_list = ['wav1.s','wav1.fi','wav1.u','wav1.w','wav2.s','wav2.fi','wav2.u','wav2.w']
 params = list(map(lambda x: x[1],list(filter(lambda kv: kv[0] in my_list, net.named_parameters()))))
 base_params = list(map(lambda x: x[1],list(filter(lambda kv: kv[0] not in my_list, net.named_parameters()))))
@@ -234,6 +245,7 @@ torch.save({
             ,model_dir+'model0')
 
 #%% train net
+# 统计真实类别与预测类别的交叉计数。
 def cm__(target,lebels,n=5):
     cm=np.zeros([n,n])
     for i in range(n):
@@ -244,6 +256,7 @@ train_loss_=[]
 val_loss_=[]
 
 
+# 按类别频数倒数抽取训练片段，执行前向、交叉熵、反向传播和 Adam 更新。
 for i in range(n_iter):
     data,label=making_batch(names=train_files,labels=train_labels,prob=train_prob,n_batch=minibach_size)
     label=np.array(label)
@@ -256,10 +269,12 @@ for i in range(n_iter):
     loss = criterion(outputs,label)
     loss.backward()
     optimizer.step()
+    # 裁剪内部频率参数 w。生成核时频率实际为 30*w，复现前需核对论文的频率上限。
     net.wav1.w.data.clamp_(freqs[0],freqs[1])
     net.wav2.w.data.clamp_(freqs[0],freqs[1])
     running_loss += loss.item()
     
+    # 抽取验证批次，关闭 Dropout 并固定批标准化统计，再记录损失和混淆矩阵。
     if i % validation_iter == (validation_iter-1):   
         data,label=making_batch(names=val_files,labels=val_labels,prob=None,n_batch=minibach_size_val)
         label= torch.tensor(label).type('torch.LongTensor')
@@ -284,6 +299,7 @@ for i in range(n_iter):
         optimizer.param_groups[1]['lr']=.95*optimizer.param_groups[1]['lr']
         print(optimizer.param_groups[0]['lr'])
         
+    # 定期保存权重、优化器状态和损失历史。
     if i % saving_iter == (saving_iter-1):
         torch.save({
                     'model_state_dict': net.state_dict(),

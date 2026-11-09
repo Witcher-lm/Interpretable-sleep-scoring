@@ -1,7 +1,9 @@
+% 载入 Python 导出的归因与核参数，统计各阶段的贡献并绘图。
 clc
 clear
 close all
 
+% 读取解释结果及核参数。下方切片和记录边界依赖原实验样本顺序。
 load ('Inter_Info_extended.mat')
 load ('Gabor_EEG_parameters.mat')
 
@@ -16,6 +18,7 @@ real_label=real_label(5:41124);
 EEG_power=EEG_power(5:41124);
 EOG_power=EOG_power(5:41124);
 
+% 用 EEG 归因总量除以 EOG 归因总量。分析时应核对分母为零的情况。
 power_ratio=EEG_power./EOG_power;
 
 
@@ -88,6 +91,7 @@ end
 
 
 
+% 按单片段预测阶段统计每个核成为最高贡献者的次数。
 N=1;
 figure
 
@@ -127,6 +131,7 @@ end
 
 
 figure
+% 按真实阶段求核的平均贡献并展示排序靠前的核。
 N=8;
 importance_i=[];
 importance_v=[];
@@ -206,6 +211,7 @@ end
 
 
 
+% 将拼接的结果按手工记录边界分组，按记录与阶段汇总。
 records_margin=[1 3229 5658 8354 11320 14100 17060 19640 22370 24800 27790 30510 32680 35160 38280 length(real_label)];
 temp_sample=1:length(real_label);
 
@@ -226,6 +232,7 @@ for stage=0:4
     Power_eeg_temp{stage+1}=temp2;
     
 end
+% 按阶段比较核贡献，绘制箱线图并标注多重比较结果。
 sig_p=.005;
 figure
 tiledlayout(4,8);
@@ -349,6 +356,7 @@ for stage=0:4
     
 end
 
+% 分别比较 EEG/EOG 比值、EEG 贡献和 EOG 贡献的阶段差异。
 %% EEG/EOG
 
 label=[];
@@ -472,6 +480,7 @@ end
 ylim([ylim_(1)-(n_sig+1)*(ylim_(2)-ylim_(1))/10 ylim_(2)])
 
 
+% 跨阶段汇总 EEG 核的平均正向贡献。
 %% best for all stages
 
 
@@ -497,6 +506,7 @@ for i =1:N
 end
 pie(temp,label)
 
+% 载入三个示例的归因矩阵与 EEG，绘制时间热图。
 %% last
 epoch=[4500,4258 , 4570];
 figure

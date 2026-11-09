@@ -1,3 +1,4 @@
+# 评估完整两阶段模型：缓存测试分数、构造上下文、比较 CNN 和 LSTM 的输出。
 import os
 import numpy as np
 import torch.nn as nn
@@ -22,6 +23,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 #%% define wave layer
 
+# 各分支接收 5 维类别分数，两个 10 维隐藏状态拼接后预测中心片段。
 class Net_LSTM(nn.Module):
     def __init__(self):
         super(Net_LSTM, self).__init__()
@@ -40,6 +42,7 @@ class Net_LSTM(nn.Module):
         return x
     
     
+# 通过参数生成短时振荡模板，再沿时间轴做一维互相关。
 class Wave(nn.Module):
     def __init__(self,n_filt,n_time,n_in=1,strid=1):
         super(Wave, self).__init__()
@@ -58,6 +61,7 @@ class Wave(nn.Module):
         w=self.w.expand(self.n_filt,self.n_time)*3
         s=self.s.expand(self.n_filt,self.n_time)*5
         time=self.time.expand_as(s)
+        # 高斯包络限制振荡的持续范围，余弦部分决定振荡频率和相位。
         filt=torch.exp(-3.1314*torch.abs(s)*((time-u)**2))*torch.cos(2*3.1415*w*10*time)
         self.filt=filt.to(device)
         filt=torch.unsqueeze(filt,1) 
@@ -69,6 +73,7 @@ class Wave(nn.Module):
 
 
 #%% network definition
+# 单片段模型：分开提取 EEG/EOG 响应，融合并输出 5 类 logits。
 class Net(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net, self).__init__()
@@ -95,6 +100,7 @@ class Net(nn.Module):
         self.dr2=nn.Dropout(p=0.5)
 
     def forward(self, x1,x2):
+        # 此处调用 PyTorch 的向量归一化，与论文的 Z-score 定义不同。
         x1=F.normalize(x1)
         x2=F.normalize(x2)
 
@@ -103,9 +109,11 @@ class Net(nn.Module):
         x1=torch.cat((x1,x2),1)
         x1=torch.transpose(x1, 1, 2) 
         
+        # 在每个时间点用相同的线性变换混合 40 路 Gabor 响应，输出 256 路。
         x1=self.mixing(x1)
         x1=torch.transpose(x1, 2, 1) 
 
+        # 五个卷积块逐步组合并压缩时间特征，每块由卷积、ReLU、池化和批标准化组成。
         x1 = self.pool(F.relu(self.conv1(x1)))
         x1 = self.conv1_bn(x1)
         x1 = self.pool(F.relu(self.conv2(x1)))
@@ -117,6 +125,7 @@ class Net(nn.Module):
         x1 = self.pool(F.relu(self.conv5(x1)))
         x1 = self.conv5_bn(x1)
    
+        # 展开通道和时间维度，经 Dropout 和全连接层得到类别分数。
         x = x1.view(-1, self.num_flat_features(x1))
         x=self.dr2(x)
         x = F.relu(self.fc1(x))
@@ -184,6 +193,7 @@ def files_for_test(test_subjects):
     
 
 
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -212,6 +222,7 @@ def making_batch(names,labels,prob,n_batch=12,ite=0):
          
     return data,label
 
+# 统计真实类别与预测类别的交叉计数。
 def cm__(target,lebels,n=5):
     cm=np.zeros([n,n])
     for i in range(n):
@@ -260,6 +271,7 @@ net.eval()
 n_iter=len(test_labels)/test_minibach_size
 OUT=0
 cm=np.zeros([5,5])
+# 第一遍逐批运行 CNN，收集单片段分数。
 for i in range(int(n_iter)):
     if i%20==19:
         print(str(i+1)+'/'+str(int(n_iter)))
@@ -281,6 +293,7 @@ print(acc)
 torch.save({'OUT':OUT,'test_labels':test_labels,'test_files':test_files,'CM':cm},'Data_for_LSTM_test.data')
 
 
+# 从缓存恢复测试分数和真实标签，接着载入 LSTM 检查点。
 temp=torch.load('Data_for_LSTM_test.data')
 OUT=temp['OUT']
 test_labels=temp['test_labels']
@@ -293,6 +306,7 @@ net=net.to(device)
 net.load_state_dict(temp['model_state_dict'])
 net.eval()
 
+# 在拼接后的分数序列上取两个上下文窗口。应排除跨记录窗口。
 def making_batch(F_in,L_in,n_batch,ite=0):
     data_1=[]
     data_2=[]
@@ -312,6 +326,7 @@ cm=0;
 out=[]
 L=[]
 OUT_LSTM=[]
+# 第二遍运行 LSTM 并累计结果。比较两阶段指标时应使用同一组中心片段。
 for i in range(1,int(n_iter)-1):
     if i%100==99:
         print(str(i+1)+'/'+str(int(n_iter)))
@@ -355,5 +370,6 @@ print('kappa_LSTM'+str(kappa_LSTM))
 print('kappa_net'+str(kappa_net))
 
 
+# 导出分类输出和评估指标，供后续分析。
 sio.savemat('results.mat', {'OUT':OUT , 'test_labels':test_labels, 'L':L, 'OUT_LSTM':OUT_LSTM,'kappa_LSTM':kappa_LSTM,'kappa_net':kappa_net,'cm_net':aa,'cm_LSTM':cm})
 

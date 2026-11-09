@@ -1,3 +1,4 @@
+# 读取已训练的 Gabor 核，展示时域波形与频谱。
 import os
 import numpy as np
 from random import shuffle
@@ -21,6 +22,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 #%% define wave layer
+# 通过参数生成短时振荡模板，再沿时间轴做一维互相关。
 class Wave(nn.Module):
     def __init__(self,n_filt,n_time,n_in=1,strid=1):
         super(Wave, self).__init__()
@@ -39,6 +41,7 @@ class Wave(nn.Module):
         w=self.w.expand(self.n_filt,self.n_time)*3
         s=self.s.expand(self.n_filt,self.n_time)*5
         time=self.time.expand_as(s)
+        # 高斯包络限制振荡的持续范围，余弦部分决定振荡频率和相位。
         filt=torch.exp(-3.1314*torch.abs(s)*((time-u)**2))*torch.cos(2*3.1415*w*10*time)
         self.filt=filt.to(device)
         filt=torch.unsqueeze(filt,1) 
@@ -50,6 +53,7 @@ class Wave(nn.Module):
 
 
 #%% network definition
+# 单片段模型：分开提取 EEG/EOG 响应，融合并输出 5 类 logits。
 class Net(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net, self).__init__()
@@ -76,6 +80,7 @@ class Net(nn.Module):
         self.dr2=nn.Dropout(p=0.5)
 
     def forward(self, x1,x2):
+        # 此处调用 PyTorch 的向量归一化，与论文的 Z-score 定义不同。
         x1=F.normalize(x1)
         x2=F.normalize(x2)
 
@@ -84,9 +89,11 @@ class Net(nn.Module):
         x1=torch.cat((x1,x2),1)
         x1=torch.transpose(x1, 1, 2) 
         
+        # 在每个时间点用相同的线性变换混合 40 路 Gabor 响应，输出 256 路。
         x1=self.mixing(x1)
         x1=torch.transpose(x1, 2, 1) 
 
+        # 五个卷积块逐步组合并压缩时间特征，每块由卷积、ReLU、池化和批标准化组成。
         x1 = self.pool(F.relu(self.conv1(x1)))
         x1 = self.conv1_bn(x1)
         x1 = self.pool(F.relu(self.conv2(x1)))
@@ -98,6 +105,7 @@ class Net(nn.Module):
         x1 = self.pool(F.relu(self.conv5(x1)))
         x1 = self.conv5_bn(x1)
    
+        # 展开通道和时间维度，经 Dropout 和全连接层得到类别分数。
         x = x1.view(-1, self.num_flat_features(x1))
         x=self.dr2(x)
         x = F.relu(self.fc1(x))
@@ -150,6 +158,7 @@ def files_for_test(test_subjects):
     
 
 
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -190,9 +199,11 @@ data=torch.tensor(data).type('torch.FloatTensor')
 data, label = data.to(device), label.to(device)
 outputs = net(data[:,0,:].unsqueeze(1),data[:,1,:].unsqueeze(1))
 
+# 前向计算生成核后，取出两组滤波器系数。
 gabor_eeg,gabor_eog=net.plot_wave()
 gabor_eeg,gabor_eog=gabor_eeg.cpu().detach().numpy(),gabor_eog.cpu().detach().numpy()
 time=np.arange(1,201)/100
+# 200 点 FFT 在 100 Hz 采样下的频率间隔为 0.5 Hz。
 freq=np.arange(0,101)/2
 plt.figure()
 for i in range(32):

@@ -1,3 +1,4 @@
+# 评估单片段分类器：加载作者权重，计算混淆矩阵、准确率和 Cohen’s κ。
 import os
 import numpy as np
 import torch.nn as nn
@@ -16,6 +17,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 #%% define wave layer
+# 通过参数生成短时振荡模板，再沿时间轴做一维互相关。
 class Wave(nn.Module):
     def __init__(self,n_filt,n_time,n_in=1,strid=1):
         super(Wave, self).__init__()
@@ -34,6 +36,7 @@ class Wave(nn.Module):
         w=self.w.expand(self.n_filt,self.n_time)*3
         s=self.s.expand(self.n_filt,self.n_time)*5
         time=self.time.expand_as(s)
+        # 高斯包络限制振荡的持续范围，余弦部分决定振荡频率和相位。
         filt=torch.exp(-3.1314*torch.abs(s)*((time-u)**2))*torch.cos(2*3.1415*w*10*time)
         self.filt=filt.to(device)
         filt=torch.unsqueeze(filt,1) 
@@ -47,6 +50,7 @@ class Wave(nn.Module):
 
 
 #%% network definition
+# 单片段模型：分开提取 EEG/EOG 响应，融合并输出 5 类 logits。
 class Net(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net, self).__init__()
@@ -73,6 +77,7 @@ class Net(nn.Module):
         self.dr2=nn.Dropout(p=0.5)
 
     def forward(self, x1,x2):
+        # 此处调用 PyTorch 的向量归一化，与论文的 Z-score 定义不同。
         x1=F.normalize(x1)
         x2=F.normalize(x2)
 
@@ -81,9 +86,11 @@ class Net(nn.Module):
         x1=torch.cat((x1,x2),1)
         x1=torch.transpose(x1, 1, 2) 
         
+        # 在每个时间点用相同的线性变换混合 40 路 Gabor 响应，输出 256 路。
         x1=self.mixing(x1)
         x1=torch.transpose(x1, 2, 1) 
 
+        # 五个卷积块逐步组合并压缩时间特征，每块由卷积、ReLU、池化和批标准化组成。
         x1 = self.pool(F.relu(self.conv1(x1)))
         x1 = self.conv1_bn(x1)
         x1 = self.pool(F.relu(self.conv2(x1)))
@@ -95,6 +102,7 @@ class Net(nn.Module):
         x1 = self.pool(F.relu(self.conv5(x1)))
         x1 = self.conv5_bn(x1)
    
+        # 展开通道和时间维度，经 Dropout 和全连接层得到类别分数。
         x = x1.view(-1, self.num_flat_features(x1))
         x=self.dr2(x)
         x = F.relu(self.fc1(x))
@@ -161,6 +169,7 @@ def files_for_test(test_subjects):
     
 
 
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -179,6 +188,7 @@ def making_batch(names,labels,prob,n_batch=12,ite=1):
     data=[]
     label=[]
 
+    # 注意：这里按 1 起算批号，下方循环按 0 起算，首批会取到负索引。
     selected=np.arange(n_batch*(ite-1),n_batch*ite)
     
     for i in selected:
@@ -189,6 +199,7 @@ def making_batch(names,labels,prob,n_batch=12,ite=1):
          
     return data,label
 
+# 统计真实类别与预测类别的交叉计数。
 def cm__(target,lebels,n=5):
     cm=np.zeros([n,n])
     for i in range(n):
@@ -212,6 +223,7 @@ test_labels,_=set_labels(test_labels)
 temp=torch.load(model_dir+'model_366999', map_location=lambda storage, loc: storage)
 net=Net()
 net=net.to(device)
+# 加载训练权重。当前脚本不含 c02 的相位参数 fi。
 net.load_state_dict(temp['model_state_dict'])
 
 net.eval()
@@ -223,6 +235,7 @@ n_iter=len(test_labels)/test_minibach_size
 cm=np.zeros([5,5])
 L=[]
 out=[]
+# 逐批得到分类分数，取分数最大类别并累加混淆矩阵。
 for i in range(int(n_iter)):
     if i%50==49:
         print(str(i+1)+'/'+str(int(n_iter)))

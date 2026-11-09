@@ -1,3 +1,4 @@
+# 为测试片段提取 Gabor 归因、核参数及两阶段预测，导出 MATLAB 分析数据。
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,6 +20,7 @@ model_dir='Models/'
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 #%% LSTM net
 
+# 各分支接收 5 维类别分数，两个 10 维隐藏状态拼接后预测中心片段。
 class Net_LSTM(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net_LSTM, self).__init__()
@@ -37,6 +39,7 @@ class Net_LSTM(nn.Module):
         return x
 
 #%% define wave layer
+# 通过参数生成短时振荡模板，再沿时间轴做一维互相关。
 class Wave(nn.Module):
     def __init__(self,n_filt,n_time,n_in=1,strid=1):
         super(Wave, self).__init__()
@@ -55,6 +58,7 @@ class Wave(nn.Module):
         w=self.w.expand(self.n_filt,self.n_time)*3
         s=self.s.expand(self.n_filt,self.n_time)*5
         time=self.time.expand_as(s)
+        # 高斯包络限制振荡的持续范围，余弦部分决定振荡频率和相位。
         filt=torch.exp(-3.1314*torch.abs(s)*((time-u)**2))*torch.cos(2*3.1415*w*10*time)
         self.filt=filt.to(device)
         filt=torch.unsqueeze(filt,1) 
@@ -66,6 +70,7 @@ class Wave(nn.Module):
 
 
 #%% network definition
+# 单片段模型：分开提取 EEG/EOG 响应，融合并输出 5 类 logits。
 class Net(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net, self).__init__()
@@ -92,6 +97,7 @@ class Net(nn.Module):
         self.dr2=nn.Dropout(p=0.5)
 
     def forward(self, x1,x2):
+        # 此处调用 PyTorch 的向量归一化，与论文的 Z-score 定义不同。
         x1=F.normalize(x1)
         x2=F.normalize(x2)
 
@@ -103,9 +109,11 @@ class Net(nn.Module):
         x1=torch.cat((self.O_W1,self.O_W2),1)
         x1=torch.transpose(x1, 1, 2) 
         
+        # 在每个时间点用相同的线性变换混合 40 路 Gabor 响应，输出 256 路。
         x1=self.mixing(x1)
         x1=torch.transpose(x1, 2, 1) 
 
+        # 五个卷积块逐步组合并压缩时间特征，每块由卷积、ReLU、池化和批标准化组成。
         x1 = self.pool(F.relu(self.conv1(x1)))
         x1 = self.conv1_bn(x1)
         x1 = self.pool(F.relu(self.conv2(x1)))
@@ -117,6 +125,7 @@ class Net(nn.Module):
         x1 = self.pool(F.relu(self.conv5(x1)))
         x1 = self.conv5_bn(x1)
    
+        # 展开通道和时间维度，经 Dropout 和全连接层得到类别分数。
         x = x1.view(-1, self.num_flat_features(x1))
         x=self.dr2(x)
         x = F.relu(self.fc1(x))
@@ -162,6 +171,7 @@ def files_for_test(test_subjects):
     
 
 
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -198,6 +208,7 @@ u=net.wav1.u.cpu().detach().numpy()
 w=net.wav1.w.cpu().detach().numpy()*30
 s=net.wav1.s.cpu().detach().numpy()*5
 time=net.wav1.time.cpu().detach().numpy()
+# 导出 EEG 核参数。w 已换算为生成余弦时使用的频率。
 sio.savemat('Gabor_EEG_parameters.mat',{'u':u,'w':w,'s':s})
 
 gabor_eeg,gabor_eog=net.plot_wave()
@@ -309,6 +320,7 @@ Power_eog_neg=np.zeros([41128,8])
 EEG_power=np.zeros([41128,1])
 EOG_power=np.zeros([41128,1])
 
+# 遍历作者原测试集中的固定索引范围。换数据时应根据记录长度动态生成合法索引。
 for file in range(4,41124):
     if file%100==99:
             print(file)
@@ -328,9 +340,11 @@ for file in range(4,41124):
     o_wav2=net.O_W2.cpu().detach().numpy()
 
 
+    # 归因目标为当前片段的 CNN 预测类别分数。LSTM 不参与这条反向传播。
     o[N_around,torch.argmax(o[N_around,:])].backward(retain_graph=True)
     
     G=net.O_W1.grad.cpu().numpy()[N_around,:]
+    # 将 ReLU 后的 Gabor 响应乘以对应梯度，按符号拆分。
     wg=o_wav1[N_around,:]*G
 
     
@@ -346,6 +360,7 @@ for file in range(4,41124):
         
     
 
+    # 对时间直接求和；论文式(6)使用平方和，复现时应明确采用哪套定义。
     bbb1=np.sum((wg1),1)
     Power_eeg_pos[file,:]=bbb1
     
@@ -361,6 +376,7 @@ for file in range(4,41124):
     
     
     G=net.O_W2.grad.cpu().numpy()[N_around,:]
+    # 将 ReLU 后的 Gabor 响应乘以对应梯度，按符号拆分。
     wg=o_wav2[N_around,:]*G
 
     
@@ -376,6 +392,7 @@ for file in range(4,41124):
         
     
 
+    # 对时间直接求和；论文式(6)使用平方和，复现时应明确采用哪套定义。
     bbb1=np.sum((wg1),1)
     Power_eog_pos[file,:]=bbb1
     
@@ -388,6 +405,7 @@ for file in range(4,41124):
    
 
     
+    # 另行计算 LSTM 预测，用于比较标签；此处不计算 LSTM 归因。
     with torch.no_grad():
         data_1=o[:N_around+1,:].unsqueeze(0)
         data_2=o[N_around:,:].unsqueeze(0)
@@ -403,6 +421,7 @@ for file in range(4,41124):
     sys_label[file,0]=torch.argmax(out_LSTM).cpu().numpy()
   
 
+# 保存核参数、正负贡献、两种信号汇总与真实和预测标签。
 sio.savemat('Inter_Info_extended.mat',{'net_label':net_label,'real_label':real_label,'sys_label':sys_label,'W_EEG':W_EEG,'W_EOG':W_EOG,'gabor_eeg':gabor_eeg,'gabor_eog':gabor_eog,'Power_eeg_pos':Power_eeg_pos,'Power_eog_pos':Power_eog_pos,'Power_eeg_neg':Power_eeg_neg,'Power_eog_neg':Power_eog_neg,'EOG_power':EOG_power,'EEG_power':EEG_power})
 
 

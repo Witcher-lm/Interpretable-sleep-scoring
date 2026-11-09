@@ -1,3 +1,4 @@
+# 对三个示例片段绘制局部时间归因，并导出 MATLAB 绘图输入。
 import os
 import numpy as np
 from random import shuffle
@@ -22,6 +23,7 @@ model_dir='Models/'
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 #%% LSTM net
 
+# 各分支接收 5 维类别分数，两个 10 维隐藏状态拼接后预测中心片段。
 class Net_LSTM(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net_LSTM, self).__init__()
@@ -40,6 +42,7 @@ class Net_LSTM(nn.Module):
         return x
 
 #%% define wave layer
+# 通过参数生成短时振荡模板，再沿时间轴做一维互相关。
 class Wave(nn.Module):
     def __init__(self,n_filt,n_time,n_in=1,strid=1):
         super(Wave, self).__init__()
@@ -58,6 +61,7 @@ class Wave(nn.Module):
         w=self.w.expand(self.n_filt,self.n_time)*3
         s=self.s.expand(self.n_filt,self.n_time)*5
         time=self.time.expand_as(s)
+        # 高斯包络限制振荡的持续范围，余弦部分决定振荡频率和相位。
         filt=torch.exp(-3.1314*torch.abs(s)*((time-u)**2))*torch.cos(2*3.1415*w*10*time)
         self.filt=filt.to(device)
         filt=torch.unsqueeze(filt,1) 
@@ -69,6 +73,7 @@ class Wave(nn.Module):
 
 
 #%% network definition
+# 单片段模型：分开提取 EEG/EOG 响应，融合并输出 5 类 logits。
 class Net(nn.Module):
     def __init__(self,N_eeg_wave=32,N_eog_wave=8,wave_time=2,fs=100):
         super(Net, self).__init__()
@@ -95,6 +100,7 @@ class Net(nn.Module):
         self.dr2=nn.Dropout(p=0.5)
 
     def forward(self, x1,x2):
+        # 此处调用 PyTorch 的向量归一化，与论文的 Z-score 定义不同。
         x1=F.normalize(x1)
         x2=F.normalize(x2)
 
@@ -106,9 +112,11 @@ class Net(nn.Module):
         x1=torch.cat((self.O_W1,self.O_W2),1)
         x1=torch.transpose(x1, 1, 2) 
         
+        # 在每个时间点用相同的线性变换混合 40 路 Gabor 响应，输出 256 路。
         x1=self.mixing(x1)
         x1=torch.transpose(x1, 2, 1) 
 
+        # 五个卷积块逐步组合并压缩时间特征，每块由卷积、ReLU、池化和批标准化组成。
         x1 = self.pool(F.relu(self.conv1(x1)))
         x1 = self.conv1_bn(x1)
         x1 = self.pool(F.relu(self.conv2(x1)))
@@ -120,6 +128,7 @@ class Net(nn.Module):
         x1 = self.pool(F.relu(self.conv5(x1)))
         x1 = self.conv5_bn(x1)
    
+        # 展开通道和时间维度，经 Dropout 和全连接层得到类别分数。
         x = x1.view(-1, self.num_flat_features(x1))
         x=self.dr2(x)
         x = F.relu(self.fc1(x))
@@ -165,6 +174,7 @@ def files_for_test(test_subjects):
     
 
 
+# 整理标签或计算类别平衡采样概率，具体处理见函数内赋值。
 def set_labels(labels):
     
     labels=np.array(labels)
@@ -236,6 +246,7 @@ def making_batch(names,labels,selected=1):
          
 #     return data_1,data_2,label
 
+# 样例索引依赖作者划分和记录顺序，换测试集后需要重新选取。
 for selected in [4500,4258 , 4570]:
 
     data, label=making_batch(names=test_files,labels=test_labels,selected=selected)
@@ -255,6 +266,7 @@ for selected in [4500,4258 , 4570]:
     o_wav2=net.O_W2.cpu().detach().numpy()
     
     
+    # 针对中心片段的 CNN 预测类别反传，计算 EEG 核的响应乘梯度。
     o[N_around,torch.argmax(o[N_around,:])].backward(retain_graph=True)
     
     G=net.O_W1.grad.cpu().numpy()[N_around,:]
@@ -267,6 +279,7 @@ for selected in [4500,4258 , 4570]:
     bbb=np.sum((wg),1)
     
     
+    # 按时间汇总贡献给核排序，选取高贡献核展示。
     aa=np.argsort(bbb)
         
     To_save={}
@@ -288,6 +301,7 @@ for selected in [4500,4258 , 4570]:
     To_save['kernels']=aa
         
     plt.subplot(3,1,2)
+    # 把贡献显示为核 × 时间热图，幂次变换仅用于绘图显示。
     plt.imshow((wg[aa[len(aa)-1:len(aa)-1-N_wave:-1]])**(1/4),aspect='auto',interpolation='None',origin='lower',cmap='jet')
     
     To_save['image_impact']=wg[aa[len(aa)-1:len(aa)-1-N_wave:-1]]
@@ -309,6 +323,7 @@ for selected in [4500,4258 , 4570]:
     print('real label = '+str(label[0]))
     To_save['label']=label[0]
     
+    # 保存核排序、归因矩阵、对应 EEG 和专家标签。
     sio.savemat('inter_'+str(selected)+'.mat',To_save)
     
     
